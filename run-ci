@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+
+# Lots of debug
+#set -x
+
+BLACK="\033[0;30m"
+DARK_GRAY="\033[1;30m"
+RED="\033[0;31m"
+LIGHT_RED="\033[1;31m"
+GREEN="\033[0;32m"
+LIGHT_GREEN="\033[1;32m"
+BROWN="\033[33m"
+YELLOW="\033[1;33m"
+BLUE="\033[ 0;34m"
+LIGHT_BLUE="\033[1;34m"
+PURPLE="\033[0;35m"
+LIGHT_PURPLE="\033[;35m"
+CYAN="\033[0;36m"
+LIGHT_CYAN="\033[ 1;36m"
+LIGHT_GRAY="\033[0;37m"
+WHITE="\033[1;37m"
+NC="\033[0m"
+
+USAGE="Usage: run-ci <ssh_user> <hostname> <private_key> [<test_user>]"
+
+# Local files/directories to copy to the remote host
+ACCUMULO_CI_FILE="accumulo-ci.py"
+ACCUMULO_INSTALLER_FILE="accumulo-installer.py"
+
+ACCUMULO_REPOSITORY="https://github.com/apache/accumulo.git"
+ACCUMULO_REF="master"
+
+MAVEN_BINARY_FILENAME="apache-maven-3.2.5-bin.tar.gz"
+MAVEN_BINARY_MD5="b2d88f02bd3a08a9df1f0b0126ebd8dc"
+MAVEN_BINARY_URL="http://archive.apache.org/dist/maven/maven-3/3.2.5/binaries/apache-maven-3.2.5-bin.tar.gz"
+REMOTE_MAVEN_FILENAME="/tmp/$MAVEN_BINARY_FILENAME"
+
+fail() {
+  echo -e "${RED}Error: ${NC}$1 "
+  exit 1
+}
+
+status() {
+  echo -e "${GREEN}$1${NC}"
+}
+
+if [[ $# -ne 3 ]] && [[ $# -ne 4 ]]; then
+  echo -e "${YELLOW}$USAGE\n"
+  fail "Expected three (or four) arguments"
+fi
+
+# Start:  Resolve Script Directory
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "${SOURCE}" ]; do # resolve $SOURCE until the file is no longer a symlink
+   bin="$( cd -P "$( dirname "${SOURCE}" )" && pwd )"
+   SOURCE="$(readlink "${SOURCE}")"
+   [[ "${SOURCE}" != /* ]] && SOURCE="${bin}/${SOURCE}" # if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
+done
+bin="$( cd -P "$( dirname "${SOURCE}" )" && pwd )"
+script=$( basename "${SOURCE}" )
+# Stop: Resolve Script Directory
+
+# The SSH user
+user=$1
+shift
+
+# the host
+h=$1
+shift
+
+pk=$1
+shift
+
+test_user="$user"
+if [[ $# -eq 1 ]]; then
+  test_user=$1
+  shift
+fi
+
+# Shorcuts for ssh and scp without user-interaction, defined after we get the privatekey
+SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $pk -o LogLevel=quiet "
+SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $pk -o LogLevel=quiet -l 8388608 "
+
+# Wrappers around SSH and SCP to suppress known host spam
+_ssh() {
+  $SSH $@
+}
+
+_scp() {
+  $SCP $@
+}
+
+# Precondition checks
+status "Running precondition checks"
+
+status "\nEnsure private key is a normal file"
+test -f $pk || fail "Private key '$pk' is not a regular file"
+echo "OK"
+
+status "\nChecking for ability to ssh to the remote host"
+_ssh $user@$h ls / > /dev/null || fail "Failed to ssh to '$h' as '$user'"
+echo "OK"
+
+status "\nChecking for python"
+_ssh $user@$h "which python && python --version" || fail "Failed to find 'python' on PATH"
+
+# Create a temp directory for the test to use
+status "\nCreating temporary directory to test"
+
+ACCUMULO_DIR=$(_ssh $user@$h mktemp -d accumulo_ci.XXXXXXXXXX --tmpdir) || fail "Failed to create temporary directory"
+
+echo "Using '$ACCUMULO_DIR' for pherf test"
+
+_ssh $user@$h test -d $ACCUMULO_DIR || fail "$?: Temporary directory '$ACCUMULO_DIR' does not exist"
+
+status "\nDownloading Maven release"
+if [[ ! -f $bin/$MAVEN_BINARY_FILENAME ]]; then
+  wget -O $bin/$MAVEN_BINARY_FILENAME $MAVEN_BINARY_URL || fail "Failed to download Maven installation"
+else
+  echo "Not re-downloading Maven archive"
+fi
+
+test -f $bin/$MAVEN_BINARY_FILENAME || fail "Failed to download Maven binary"
+if [[ ! $MAVEN_BINARY_MD5 == $(md5sum $bin/$MAVEN_BINARY_FILENAME | awk '{print $1}') ]]; then
+  fail "Local Maven tarball checksum does not match expected: $MAVEN_BINARY_MD5"
+fi
+
+status "\nSelectively copying Maven tarball"
+
+output=$(_ssh $user@$h test -f $REMOTE_MAVEN_FILENAME)
+maven_tarball_present=$?
+
+if [[ 0 -eq  ${maven_tarball_present} ]]; then
+  echo "Found Maven tarball (in $REMOTE_MAVEN_FILENAME) on $h"
+  remote_checksum=$(_ssh $user@$h md5sum $REMOTE_MAVEN_FILENAME | awk '{print $1}')
+  if [[ $MAVEN_BINARY_MD5 !=  $remote_checksum ]]; then
+    echo "Remote checksum $remote_checksum did not match expected $MAVEN_BINARY_MD5. Removing remote file."
+    _ssh $user@$h rm $REMOTE_MAVEN_FILENAME || fail "Failed to delete $REMOTE_MAVEN_FILENAME on $h"
+    echo "Copying Maven tarball"
+    _scp $bin/$MAVEN_BINARY_FILENAME "$user@$h":$REMOTE_MAVEN_FILENAME
+  else
+    # Nothing to do, the file exists with the correct checksum. Win.
+    echo "Not copying Maven tarball to $h"
+  fi
+else
+  echo "Maven tarball does not exist on remote host, copying the file"
+  _scp $bin/$MAVEN_BINARY_FILENAME "$user@$h":$REMOTE_MAVEN_FILENAME
+fi
+
+# Copy our data there
+status "\nCopying files to remote host"
+_scp $bin/$ACCUMULO_CI_FILE "$user@$h":$ACCUMULO_DIR/ || fail "Failed to copy $ACCUMULO_CI_FILE"
+_scp $bin/$ACCUMULO_INSTALLER_FILE "$user@$h":$ACCUMULO_DIR/ || fail "Failed to copy $ACCUMULO_INSTALLER_FILE"
+
+status "\nExtracting Maven archive"
+_ssh $user@$h tar xf $REMOTE_MAVEN_FILENAME -C $ACCUMULO_DIR || fail "Failed to extract Maven archive"
+
+if [[ $user != $test_user ]]; then
+  _ssh $user@$h chown -R $test_user "${ACCUMULO_DIR}" || fail "Failed to change ownership of '$ACCUMULO_DIR' to ${test_user}"
+fi
+
+status "\nChecking out Accumulo repository"
+_ssh $user@$h git clone $ACCUMULO_REPOSITORY $ACCUMULO_DIR/accumulo || fail "Failed to clone Phoenix from $ACCUMULO_REPOSITORY"
+_ssh $user@$h "cd $ACCUMULO_DIR/accumulo && git checkout $ACCUMULO_REF" || fail "Failed to checkout $ACCUMULO_REF"
+
+status "\nUpdating Accumulo installation"
+_ssh $user@$h "cd $ACCUMULO_DIR; python ${ACCUMULO_INSTALLER_FILE}" || fail "Failed to update Phoenix installation to run pherf."
+
+# Run the driver
+status "\nRunning ${ACCUMULO_CI_FILE} as ${test_user}"
+_ssh $user@$h "su -c 'cd ${ACCUMULO_DIR}; python ${ACCUMULO_CI_FILE} 2>&1' - ${test_user}"
+ret_code=$?
+
+# Get an extra newline in there for readability (separate the output from the final result)
+echo ""
+if [[ $ret_code -ne 0 ]]; then
+  fail "Pherf driver did not exit successfully"
+else
+  status "Pherf driver exited successfully"
+fi
