@@ -160,11 +160,17 @@ if [[ $user != $test_user ]]; then
 fi
 
 status "\nChecking out Accumulo repository"
-_ssh $user@$h git clone $ACCUMULO_REPOSITORY $ACCUMULO_DIR/accumulo || fail "Failed to clone Phoenix from $ACCUMULO_REPOSITORY"
+_ssh $user@$h git clone $ACCUMULO_REPOSITORY $ACCUMULO_DIR/accumulo || fail "Failed to clone Accumulo from $ACCUMULO_REPOSITORY"
 _ssh $user@$h "cd $ACCUMULO_DIR/accumulo && git checkout $ACCUMULO_REF" || fail "Failed to checkout $ACCUMULO_REF"
 
 status "\nBuilding and installing Accumulo"
 _ssh $user@$h "cd $ACCUMULO_DIR; python ${ACCUMULO_INSTALLER_FILE}" || fail "Failed to build and install Accumulo."
+
+## TODO
+#
+# * Create some configuration files for Accumulo (provide minimal properties on CLI?)
+# * For every other node, copy the installation (including configs) from $h
+# * Start Accumulo as accumulo user (prereq: create the user acct and configure it)
 
 # Run the driver
 status "\nRunning ${ACCUMULO_CI_FILE} as ${test_user}"
