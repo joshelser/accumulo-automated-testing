@@ -163,8 +163,8 @@ status "\nChecking out Accumulo repository"
 _ssh $user@$h git clone $ACCUMULO_REPOSITORY $ACCUMULO_DIR/accumulo || fail "Failed to clone Phoenix from $ACCUMULO_REPOSITORY"
 _ssh $user@$h "cd $ACCUMULO_DIR/accumulo && git checkout $ACCUMULO_REF" || fail "Failed to checkout $ACCUMULO_REF"
 
-status "\nUpdating Accumulo installation"
-_ssh $user@$h "cd $ACCUMULO_DIR; python ${ACCUMULO_INSTALLER_FILE}" || fail "Failed to update Phoenix installation to run pherf."
+status "\nBuilding and installing Accumulo"
+_ssh $user@$h "cd $ACCUMULO_DIR; python ${ACCUMULO_INSTALLER_FILE}" || fail "Failed to build and install Accumulo."
 
 # Run the driver
 status "\nRunning ${ACCUMULO_CI_FILE} as ${test_user}"
@@ -174,7 +174,7 @@ ret_code=$?
 # Get an extra newline in there for readability (separate the output from the final result)
 echo ""
 if [[ $ret_code -ne 0 ]]; then
-  fail "Pherf driver did not exit successfully"
+  fail "Accumulo ContinuousIngest driver did not exit successfully"
 else
-  status "Pherf driver exited successfully"
+  status "Accumulo ContinuousIngest driver exited successfully"
 fi

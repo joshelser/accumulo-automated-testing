@@ -12,15 +12,16 @@ def main(**kwargs):
   accumulo_home = kwargs['accumulo_home']
   hadoop_home = kwargs['hadoop_home']
   maven_installation = kwargs['maven_installation']
+  java_home = kwargs['java_home']
 
   # Build accumulo
-  build(accumulo_repo, maven_installation)
+  exit_code = build(accumulo_repo, maven_installation, java_home)
   if exit_code:
     return exit_code
 
   # Install accumulo
   # TODO Need to support installing to many nodes
-  install(accumulo_repo, accumulo_home)
+  exit_code = install(accumulo_repo, accumulo_home)
   if exit_code:
     return exit_code
 
@@ -30,9 +31,10 @@ def validate_args(kwargs):
   accumulo_repo = kwargs['accumulo_repo']
   hadoop_home = kwargs['hadoop_home']
   maven_installation = kwargs['maven_installation']
+  java_home = kwargs['java_home']
 
   # Check that all paths that should be directories are such
-  for d in [accumulo_repo, hadoop_home, maven_installation]:
+  for d in [accumulo_repo, hadoop_home, maven_installation, java_home]:
     assert os.path.isdir(d), "%s is not a directory" % (d)
 
 def copy_if_missing(src, dest):
@@ -69,15 +71,21 @@ def copy(src, dest):
     logger.debug("Copying file %s to %s" % (src, dest))
     shutil.copy(src, dest)
 
-def build(accumulo_repo, maven_installation):
+def build(accumulo_repo, maven_installation, java_home):
+  env = os.environ.copy()
+  env['JAVA_HOME'] = java_home
+  env['PATH'] = env['PATH'] + ':' + os.path.join(java_home, 'bin')
   args = [os.path.join(maven_installation, 'bin', 'mvn'), 'package', '-DskipTests', '-Passemble']
   logger.info("Running '%s' in %s" % (' '.join(args), accumulo_repo))
-  return subprocess.call(args, cwd=accumulo_repo)
+  return subprocess.call(args, cwd=accumulo_repo, env=env)
 
 def install(accumulo_repo, accumulo_home):
-  if not os.path.exists(accumulo_home):
-    logger.info("Creating %s" % (accumulo_home))
-    os.makedirs(accumulo_home)
+  if os.path.exists(accumulo_home):
+    logger.info('Removing directory %s' % (accumulo_home))
+    shutil.rmtree(accumulo_home)
+
+  logger.info("Creating %s" % (accumulo_home))
+  os.makedirs(accumulo_home)
   args = ['tar', 'xf', os.path.join(accumulo_repo, 'assemble', 'target', 'accumulo*.tar.gz'), '--strip', '1', '-C', accumulo_home]
   logger.info("Running '%s'" % (' '.join(args)))
   return subprocess.call(args)
@@ -112,6 +120,12 @@ def install(accumulo_repo, accumulo_home):
 #
 #   return 0
 
+def find_java_home():
+  dirs = glob.glob('/usr/jdk64/jdk*')
+  assert len(dirs) > 0, "Found no JDKs under /usr/jdk64, try specifying by --java_home"
+  # first one is the largest (most recent) jdk
+  return dirs[0]
+
 if __name__ == '__main__':
   current_dir = os.path.dirname(os.path.realpath(__file__))
   logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
@@ -121,6 +135,7 @@ if __name__ == '__main__':
   parser.add_argument("--hadoop_home", help="The location of the Hadoop installation", default="/usr/hdp/current/hadoop-client/")
   parser.add_argument("--accumulo_repo", help="The location of the Accumulo checkout", default=os.path.join(current_dir, 'accumulo'))
   parser.add_argument('--maven_installation', help="The location of a Maven installation", default=os.path.join(current_dir, 'apache-maven-3.2.5'))
+  parser.add_argument('--java_home', help="The location of the Java installation", default=find_java_home())
 
   args = parser.parse_args()
   # convert the arguments to kwargs
