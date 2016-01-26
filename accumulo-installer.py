@@ -86,7 +86,9 @@ def install(accumulo_repo, accumulo_home):
 
   logger.info("Creating %s" % (accumulo_home))
   os.makedirs(accumulo_home)
-  args = ['tar', 'xf', os.path.join(accumulo_repo, 'assemble', 'target', 'accumulo*.tar.gz'), '--strip', '1', '-C', accumulo_home]
+  matches = glob.glob(os.path.join(accumulo_repo, 'assemble', 'target', 'accumulo*.tar.gz'))
+  assert len(matches) == 1, "Expected only one matching file: found " + matches
+  args = ['tar', 'xf', matches[0], '--strip', '1', '-C', accumulo_home]
   logger.info("Running '%s'" % (' '.join(args)))
   return subprocess.call(args)
 
