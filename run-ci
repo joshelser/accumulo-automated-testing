@@ -176,7 +176,8 @@ while read -r line; do
   host="$line"
 
   # Copy our data there
-  status "\nCopying files to remote host"
+  status "\nCopying files to remote $host"
+  _ssh $user@$host "mkdir -p $ACCUMULO_DIR" || fail "Failed to create ${ACCUMULO_DIR} on $host"
   _scp $bin/$ACCUMULO_INSTALLER_FILE "$user@$host":$ACCUMULO_DIR/ || fail "Failed to copy $ACCUMULO_INSTALLER_FILE"
 
   #_ssh $user@$host "mkdir -p $dir" || fail "Failed to create temp directory on $host"
