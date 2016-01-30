@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Lots of debug
-#set -x
+# set -x
 
 BLACK="\033[0;30m"
 DARK_GRAY="\033[1;30m"
@@ -21,10 +21,11 @@ LIGHT_GRAY="\033[0;37m"
 WHITE="\033[1;37m"
 NC="\033[0m"
 
-USAGE="Usage: run-ci <ssh_user> <hostname> <private_key> [<test_user>]"
+USAGE="Usage: run-ci <ssh_user> <private_key> <hosts_file> accumulo-site.xml accumulo-env.sh"
 
 # Local files/directories to copy to the remote host
 ACCUMULO_CI_FILE="accumulo-ci.py"
+ACCUMULO_BUILDER_FILE="accumulo-builder.py"
 ACCUMULO_INSTALLER_FILE="accumulo-installer.py"
 
 ACCUMULO_REPOSITORY="https://github.com/apache/accumulo.git"
@@ -44,9 +45,9 @@ status() {
   echo -e "${GREEN}$1${NC}"
 }
 
-if [[ $# -ne 3 ]] && [[ $# -ne 4 ]]; then
+if [[ $# -ne 5 ]]; then
   echo -e "${YELLOW}$USAGE\n"
-  fail "Expected three (or four) arguments"
+  fail "Expected five arguments"
 fi
 
 # Start:  Resolve Script Directory
@@ -64,22 +65,26 @@ script=$( basename "${SOURCE}" )
 user=$1
 shift
 
-# the host
-h=$1
-shift
-
 pk=$1
 shift
 
-test_user="$user"
-if [[ $# -eq 1 ]]; then
-  test_user=$1
-  shift
-fi
+hosts_file=$1
+shift
+first_host=$(head -n1 ${hosts_file})
+h="${first_host}"
+
+accumulo_site_file=$1
+shift
+
+accumulo_env_file=$1
+shift
 
 # Shorcuts for ssh and scp without user-interaction, defined after we get the privatekey
-SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $pk -o LogLevel=quiet "
+# "-n" prevents SSH from reading stdin (which might break loops with stdin redirects)
+SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $pk -o LogLevel=quiet -n "
+# Cap out the rate which we copy data
 SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $pk -o LogLevel=quiet -l 8388608 "
+SCP_WITHOUT_KEY="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=quiet "
 
 # Wrappers around SSH and SCP to suppress known host spam
 _ssh() {
@@ -90,10 +95,11 @@ _scp() {
   $SCP $@
 }
 
-# Precondition checks
-status "Running precondition checks"
+_scp_without_key() {
+  $SCP_WITHOUT_KEY $@
+}
 
-status "\nEnsure private key is a normal file"
+status "\nEnsuring private key is a normal file"
 test -f $pk || fail "Private key '$pk' is not a regular file"
 echo "OK"
 
@@ -109,7 +115,7 @@ status "\nCreating temporary directory to test"
 
 ACCUMULO_DIR=$(_ssh $user@$h mktemp -d accumulo_ci.XXXXXXXXXX --tmpdir) || fail "Failed to create temporary directory"
 
-echo "Using '$ACCUMULO_DIR' for pherf test"
+echo "Using '$ACCUMULO_DIR' for Accumulo test"
 
 _ssh $user@$h test -d $ACCUMULO_DIR || fail "$?: Temporary directory '$ACCUMULO_DIR' does not exist"
 
@@ -147,24 +153,42 @@ else
   _scp $bin/$MAVEN_BINARY_FILENAME "$user@$h":$REMOTE_MAVEN_FILENAME
 fi
 
-# Copy our data there
-status "\nCopying files to remote host"
-_scp $bin/$ACCUMULO_CI_FILE "$user@$h":$ACCUMULO_DIR/ || fail "Failed to copy $ACCUMULO_CI_FILE"
-_scp $bin/$ACCUMULO_INSTALLER_FILE "$user@$h":$ACCUMULO_DIR/ || fail "Failed to copy $ACCUMULO_INSTALLER_FILE"
-
 status "\nExtracting Maven archive"
 _ssh $user@$h tar xf $REMOTE_MAVEN_FILENAME -C $ACCUMULO_DIR || fail "Failed to extract Maven archive"
-
-if [[ $user != $test_user ]]; then
-  _ssh $user@$h chown -R $test_user "${ACCUMULO_DIR}" || fail "Failed to change ownership of '$ACCUMULO_DIR' to ${test_user}"
-fi
 
 status "\nChecking out Accumulo repository"
 _ssh $user@$h git clone $ACCUMULO_REPOSITORY $ACCUMULO_DIR/accumulo || fail "Failed to clone Accumulo from $ACCUMULO_REPOSITORY"
 _ssh $user@$h "cd $ACCUMULO_DIR/accumulo && git checkout $ACCUMULO_REF" || fail "Failed to checkout $ACCUMULO_REF"
 
-status "\nBuilding and installing Accumulo"
-_ssh $user@$h "cd $ACCUMULO_DIR; python ${ACCUMULO_INSTALLER_FILE}" || fail "Failed to build and install Accumulo."
+tarball="not found"
+
+# Copy the builder and test scripts to the first node (where we'll build Accumulo and ultimately run the tests)
+_scp $bin/$ACCUMULO_BUILDER_FILE "$user@$first_host":$ACCUMULO_DIR/ || fail "Failed to copy $ACCUMULO_BUILDER_FILE"
+_scp $bin/$ACCUMULO_CI_FILE "$user@$first_host":$ACCUMULO_DIR/ || fail "Failed to copy $ACCUMULO_CI_FILE"
+
+status "\nBuilding Accumulo on $first_host"
+_ssh $user@$first_host "cd $ACCUMULO_DIR; python ${ACCUMULO_BUILDER_FILE}" || fail "Failed to build Accumulo on $host"
+tarball=$(_ssh $user@$first_host "ls $ACCUMULO_DIR/accumulo/assemble/target/accumulo*-bin.tar.gz")
+tarball_dir=$(dirname $tarball)
+status "\nFound tarball at $tarball"
+
+while read -r line; do
+  host="$line"
+
+  # Copy our data there
+  status "\nCopying files to remote host"
+  _scp $bin/$ACCUMULO_INSTALLER_FILE "$user@$host":$ACCUMULO_DIR/ || fail "Failed to copy $ACCUMULO_INSTALLER_FILE"
+
+  #_ssh $user@$host "mkdir -p $dir" || fail "Failed to create temp directory on $host"
+  _ssh $user@$host "mkdir -p $tarball_dir"
+  #_ssh $user@$first_host "$SCP_WITHOUT_KEY $tarball $host:$dir" || fail "Failed to copy tarball from $first_host to $host"
+  _ssh $user@$first_host "$SCP_WITHOUT_KEY $tarball $host:$tarball_dir"
+
+  status "\nInstalling Accumulo on $host"
+  #_ssh $user@$host "python ${ACCUMULO_DIR}/${ACCUMULO_INSTALLER_FILE} --accumulo_tarball ${tarball}" || fail "Failed to install Accumulo tarball on $host"
+  _ssh $user@$host "python ${ACCUMULO_DIR}/${ACCUMULO_INSTALLER_FILE} --accumulo_tarball ${tarball}"
+done < "${hosts_file}"
+
 
 ## TODO
 #
@@ -173,8 +197,11 @@ _ssh $user@$h "cd $ACCUMULO_DIR; python ${ACCUMULO_INSTALLER_FILE}" || fail "Fai
 # * Start Accumulo as accumulo user (prereq: create the user acct and configure it)
 
 # Run the driver
-status "\nRunning ${ACCUMULO_CI_FILE} as ${test_user}"
-_ssh $user@$h "su -c 'cd ${ACCUMULO_DIR}; python ${ACCUMULO_CI_FILE} 2>&1' - ${test_user}"
+status "\nChanging permissions of ${ACCUMULO_DIR} on ${first_host}"
+_ssh $user@${first_host} "chmod -R 777 ${ACCUMULO_DIR}" || fail "Failed to change permissions on ${ACCUMULO_DIR}"
+
+status "\nRunning ${ACCUMULO_CI_FILE} as accumulo"
+_ssh $user@${first_host} "su -c 'cd ${ACCUMULO_DIR}; python ${ACCUMULO_CI_FILE} 2>&1' - accumulo"
 ret_code=$?
 
 # Get an extra newline in there for readability (separate the output from the final result)

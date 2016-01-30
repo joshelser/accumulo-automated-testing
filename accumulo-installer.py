@@ -8,34 +8,48 @@ def main(**kwargs):
   validate_args(kwargs)
 
   current_dir = os.path.dirname(os.path.realpath(__file__))
-  accumulo_repo = kwargs['accumulo_repo']
+  accumulo_tarball = kwargs['accumulo_tarball']
   accumulo_home = kwargs['accumulo_home']
-  hadoop_home = kwargs['hadoop_home']
-  maven_installation = kwargs['maven_installation']
-  java_home = kwargs['java_home']
 
-  # Build accumulo
-  exit_code = build(accumulo_repo, maven_installation, java_home)
+  # Make sure the accumulo user exists and such
+  exit_code = setup_accumulo_user()
   if exit_code:
     return exit_code
 
   # Install accumulo
-  # TODO Need to support installing to many nodes
-  exit_code = install(accumulo_repo, accumulo_home)
+  exit_code = install(accumulo_tarball, accumulo_home)
   if exit_code:
     return exit_code
 
   return 0
 
 def validate_args(kwargs):
-  accumulo_repo = kwargs['accumulo_repo']
-  hadoop_home = kwargs['hadoop_home']
-  maven_installation = kwargs['maven_installation']
-  java_home = kwargs['java_home']
+  accumulo_tarball = kwargs['accumulo_tarball']
 
-  # Check that all paths that should be directories are such
-  for d in [accumulo_repo, hadoop_home, maven_installation, java_home]:
-    assert os.path.isdir(d), "%s is not a directory" % (d)
+  # Check that all files are actually files
+  for f in [accumulo_tarball]:
+    assert os.path.isfile(f), '%s is not a file' % (f)
+
+def setup_accumulo_user():
+  stdout = subprocess.check_output(['awk', "-F", ':', '{print $1}', "/etc/passwd"])
+  users = stdout.split("\n")
+  if not 'accumulo' in users:
+    return create_accumulo_user()
+
+  return 0
+
+def create_accumulo_user():
+  limits_dir = '/etc/security/limits.d'
+  limits_file = os.path.join(limits_dir, 'accumulo.conf')
+  if not os.path.isfile(limits_file):
+    logger.debug("Creating limits file for Accumulo")
+    if not os.path.isdir(limits_dir):
+      os.makedirs(limits_dir)
+    with open(limits_file, 'w') as f:
+      f.write('accumulo - nofile 65536')
+
+  logger.debug("Creating accumulo user")
+  return subprocess.call(['useradd', '-m', 'accumulo'])
 
 def copy_if_missing(src, dest):
   '''
@@ -71,73 +85,29 @@ def copy(src, dest):
     logger.debug("Copying file %s to %s" % (src, dest))
     shutil.copy(src, dest)
 
-def build(accumulo_repo, maven_installation, java_home):
-  env = os.environ.copy()
-  env['JAVA_HOME'] = java_home
-  env['PATH'] = env['PATH'] + ':' + os.path.join(java_home, 'bin')
-  args = [os.path.join(maven_installation, 'bin', 'mvn'), 'package', '-DskipTests', '-Passemble']
-  logger.info("Running '%s' in %s" % (' '.join(args), accumulo_repo))
-  return subprocess.call(args, cwd=accumulo_repo, env=env)
-
-def install(accumulo_repo, accumulo_home):
+def install(accumulo_tarball, accumulo_home):
   if os.path.exists(accumulo_home):
     logger.info('Removing directory %s' % (accumulo_home))
     shutil.rmtree(accumulo_home)
 
   logger.info("Creating %s" % (accumulo_home))
   os.makedirs(accumulo_home)
-  matches = glob.glob(os.path.join(accumulo_repo, 'assemble', 'target', 'accumulo*.tar.gz'))
-  assert len(matches) == 1, "Expected only one matching file: found " + matches
-  args = ['tar', 'xf', matches[0], '--strip', '1', '-C', accumulo_home]
+
+  args = ['tar', 'xf', accumulo_tarball, '--strip', '1', '-C', accumulo_home]
   logger.info("Running '%s'" % (' '.join(args)))
-  return subprocess.call(args)
+  exit_code = subprocess.call(args)
+  if exit_code:
+    return exit_code
 
-# def remove_bad_symlinks(parent_dir):
-#   assert os.path.exists(parent_dir) and os.path.isdir(parent_dir), "%s is not a directory" % parent_dir
-#   for filename in os.listdir(parent_dir):
-#     full_path = os.path.join(parent_dir, filename)
-#     # Try to find symlinks to files that don't exist
-#     if os.path.islink(full_path) and not os.path.exists(full_path):
-#       logger.info("Removing broken symlink: %s" % full_path)
-#       os.remove(full_path)
-
-# def copy_extra_phoenix_libs(hbase_home, phoenix_home):
-#   jars_to_link = ['commons-csv-1.0.jar']
-#   for jar_to_link in jars_to_link:
-#     source = os.path.join(phoenix_home, 'lib', jar_to_link)
-#     dest = os.path.join(hbase_home, 'lib', jar_to_link)
-#     if not os.path.islink(dest):
-#       logger.debug("Symlinking %s to %s" % (source, dest))
-#       os.symlink(source, dest)
-#
-# def restart_queryserver(phoenix_home):
-#   assert phoenix_home, "The phoenix home value was undefined"
-#   for action in ['stop', 'start']:
-#     args = ['su', '-c', '%s %s' % (os.path.join(phoenix_home, 'bin', 'queryserver.py'), action), "-", "hbase"]
-#     logger.info("Running %s" % (" ".join(args)))
-#     exit_code = subprocess.call(args)
-#     # Don't exit if we fail to stop the server, it might not be running
-#     if exit_code and action != 'stop':
-#       return exit_code
-#
-#   return 0
-
-def find_java_home():
-  dirs = glob.glob('/usr/jdk64/jdk*')
-  assert len(dirs) > 0, "Found no JDKs under /usr/jdk64, try specifying by --java_home"
-  # first one is the largest (most recent) jdk
-  return dirs[0]
+  return subprocess.call(['chown', '-R', 'accumulo', accumulo_home])
 
 if __name__ == '__main__':
   current_dir = os.path.dirname(os.path.realpath(__file__))
   logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
 
   parser = argparse.ArgumentParser()
+  parser.add_argument("--accumulo_tarball", help="An Accumulo tarball to install", default=None)
   parser.add_argument("--accumulo_home", help="The location to install Accumulo", default="/usr/hdp/current/accumulo-ci")
-  parser.add_argument("--hadoop_home", help="The location of the Hadoop installation", default="/usr/hdp/current/hadoop-client/")
-  parser.add_argument("--accumulo_repo", help="The location of the Accumulo checkout", default=os.path.join(current_dir, 'accumulo'))
-  parser.add_argument('--maven_installation', help="The location of a Maven installation", default=os.path.join(current_dir, 'apache-maven-3.2.5'))
-  parser.add_argument('--java_home', help="The location of the Java installation", default=find_java_home())
 
   args = parser.parse_args()
   # convert the arguments to kwargs
