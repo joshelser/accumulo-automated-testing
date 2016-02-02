@@ -68,7 +68,8 @@ def initialize(accumulo_home, instance_name, password, accumulo_hdfs_dir):
   subprocess.call(['su', 'hdfs', '-c', 'hdfs dfs -mkdir ' + accumulo_hdfs_dir])
   subprocess.call(['su', 'hdfs', '-c', 'hdfs dfs -chown accumulo ' + accumulo_hdfs_dir])
 
-  exit_code = subprocess.call([os.path.join(accumulo_home, 'bin', 'accumulo'), 'init', '--clear-instance-name', '--instance-name', instance_name, '--password', password])
+  accumulo_init_cmd = ' '.join([os.path.join(accumulo_home, 'bin', 'accumulo'), 'init', '--clear-instance-name', '--instance-name', instance_name, '--password', password])
+  exit_code = subprocess.call(['su', 'accumulo', '-c', accumulo_init_cmd])
   if exit_code:
     return exit_code
 
