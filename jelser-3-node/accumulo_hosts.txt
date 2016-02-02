@@ -1,0 +1,3 @@
+jelser-accumulo-1.novalocal
+jelser-accumulo-2.novalocal
+jelser-accumulo-3.novalocal
