@@ -27,6 +27,7 @@ USAGE="Usage: run-ci <ssh_user> <private_key> <hosts_file> accumulo-site.xml acc
 ACCUMULO_CI_FILE="accumulo-ci.py"
 ACCUMULO_BUILDER_FILE="accumulo-builder.py"
 ACCUMULO_INSTALLER_FILE="accumulo-installer.py"
+ACCUMULO_STARTER_FILE="accumulo-starter.py"
 
 ACCUMULO_REPOSITORY="https://github.com/apache/accumulo.git"
 ACCUMULO_REF="master"
@@ -172,13 +173,35 @@ tarball=$(_ssh $user@$first_host "ls $ACCUMULO_DIR/accumulo/assemble/target/accu
 tarball_dir=$(dirname $tarball)
 status "\nFound tarball at $tarball"
 
+all_hosts=()
 while read -r line; do
-  host="$line"
+  all_hosts+=("$line")
+done < "${hosts_file}"
 
+tempdir=$(mktemp -d ./temp_accumulo_ci.XXXXXX) || fail "Failed to create temporary directory"
+echo $first_host > "$tempdir/masters"
+echo $first_host > "$tempdir/monitor"
+echo $first_host > "$tempdir/tracers"
+
+for host in "${all_hosts[@]}"; do
+  if [[ $host != $first_host ]]; then
+    echo $host >> "$tempdir/slaves"
+  fi
+done
+
+for host in "${all_hosts[@]}"; do
   # Copy our data there
   status "\nCopying files to remote $host"
   _ssh $user@$host "mkdir -p $ACCUMULO_DIR" || fail "Failed to create ${ACCUMULO_DIR} on $host"
   _scp $bin/$ACCUMULO_INSTALLER_FILE "$user@$host":$ACCUMULO_DIR/ || fail "Failed to copy $ACCUMULO_INSTALLER_FILE"
+  _scp $bin/$ACCUMULO_STARTER_FILE "$user@$host":$ACCUMULO_DIR/ || fail "Failed to copy $ACCUMULO_STARTER_FILE"
+  _scp ${accumulo_site_file} "$user@$host":$ACCUMULO_DIR/ || fail "Failed to copy ${accumulo_site_file}"
+  _scp ${accumulo_env_file} "$user@$host":$ACCUMULO_DIR/ || fail "Failed to copy ${accumulo_env_file}"
+
+  _scp ${tempdir}/masters "$user@$host":$ACCUMULO_DIR/  || fail "Failed to copy masters file"
+  _scp ${tempdir}/monitor "$user@$host":$ACCUMULO_DIR/  || fail "Failed to copy monitor file"
+  _scp ${tempdir}/tracers "$user@$host":$ACCUMULO_DIR/  || fail "Failed to copy tracers file"
+  _scp ${tempdir}/slaves "$user@$host":$ACCUMULO_DIR/  || fail "Failed to copy slaves file"
 
   #_ssh $user@$host "mkdir -p $dir" || fail "Failed to create temp directory on $host"
   _ssh $user@$host "mkdir -p $tarball_dir"
@@ -188,7 +211,7 @@ while read -r line; do
   status "\nInstalling Accumulo on $host"
   #_ssh $user@$host "python ${ACCUMULO_DIR}/${ACCUMULO_INSTALLER_FILE} --accumulo_tarball ${tarball}" || fail "Failed to install Accumulo tarball on $host"
   _ssh $user@$host "python ${ACCUMULO_DIR}/${ACCUMULO_INSTALLER_FILE} --accumulo_tarball ${tarball}"
-done < "${hosts_file}"
+done
 
 
 ## TODO
@@ -196,6 +219,8 @@ done < "${hosts_file}"
 # * Create some configuration files for Accumulo (provide minimal properties on CLI?)
 # * For every other node, copy the installation (including configs) from $h
 # * Start Accumulo as accumulo user (prereq: create the user acct and configure it)
+
+_ssh $user@$host "python ${ACCUMULO_DIR}/${ACCUMULO_STARTER_FILE}"
 
 # Run the driver
 status "\nChanging permissions of ${ACCUMULO_DIR} on ${first_host}"

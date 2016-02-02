@@ -10,6 +10,12 @@ def main(**kwargs):
   current_dir = os.path.dirname(os.path.realpath(__file__))
   accumulo_tarball = kwargs['accumulo_tarball']
   accumulo_home = kwargs['accumulo_home']
+  accumulo_site_file = kwargs['accumulo_site_file']
+  accumulo_env_file = kwargs['accumulo_env_file']
+  accumulo_masters_file = kwargs['accumulo_masters_file']
+  accumulo_monitor_file = kwargs['accumulo_monitor_file']
+  accumulo_tracers_file = kwargs['accumulo_tracers_file']
+  accumulo_slaves_file = kwargs['accumulo_slaves_file']
 
   # Make sure the accumulo user exists and such
   exit_code = setup_accumulo_user()
@@ -17,7 +23,7 @@ def main(**kwargs):
     return exit_code
 
   # Install accumulo
-  exit_code = install(accumulo_tarball, accumulo_home)
+  exit_code = install(accumulo_tarball, accumulo_home, accumulo_site_file, accumulo_env_file, accumulo_masters_file, accumulo_monitor_file, accumulo_tracers_file, accumulo_slaves_file)
   if exit_code:
     return exit_code
 
@@ -25,9 +31,15 @@ def main(**kwargs):
 
 def validate_args(kwargs):
   accumulo_tarball = kwargs['accumulo_tarball']
+  accumulo_site_file = kwargs['accumulo_site_file']
+  accumulo_env_file = kwargs['accumulo_env_file']
+  accumulo_masters_file = kwargs['accumulo_masters_file']
+  accumulo_monitor_file = kwargs['accumulo_monitor_file']
+  accumulo_tracers_file = kwargs['accumulo_tracers_file']
+  accumulo_slaves_file = kwargs['accumulo_slaves_file']
 
   # Check that all files are actually files
-  for f in [accumulo_tarball]:
+  for f in [accumulo_tarball, accumulo_site_file, accumulo_env_file, accumulo_masters_file, accumulo_monitor_file, accumulo_tracers_file, accumulo_slaves_file]:
     assert os.path.isfile(f), '%s is not a file' % (f)
 
 def setup_accumulo_user():
@@ -85,7 +97,7 @@ def copy(src, dest):
     logger.debug("Copying file %s to %s" % (src, dest))
     shutil.copy(src, dest)
 
-def install(accumulo_tarball, accumulo_home):
+def install(accumulo_tarball, accumulo_home, accumulo_site_file, accumulo_env_file, accumulo_masters_file, accumulo_monitor_file, accumulo_tracers_file, accumulo_slaves_file):
   if os.path.exists(accumulo_home):
     logger.info('Removing directory %s' % (accumulo_home))
     shutil.rmtree(accumulo_home)
@@ -99,6 +111,20 @@ def install(accumulo_tarball, accumulo_home):
   if exit_code:
     return exit_code
 
+  # Configuration files
+  accumulo_conf_dir = os.path.join(accumulo_home, 'conf')
+  example_conf_dir = os.path.join(accumulo_conf_dir, 'examples', '3GB', 'native-standalone')
+
+  # Copy the provided (or generated files)
+  for config_file in [accumulo_site_file, accumulo_env_file, accumulo_masters_file, accumulo_monitor_file, accumulo_tracers_file, accumulo_slaves_file]:
+    copy(config_file, os.path.join(accumulo_conf_dir, os.path.basename(config_file)))
+
+  # Copy the others from the examples that we don't care about
+  for example_file in ['auditLog.xml', 'generic_logger.xml', 'log4j.properties', 'client.conf', 'monitor_logger.xml', 'hadoop-metrics2-accumulo.properties']:
+    copy(os.path.join(example_conf_dir, example_file), os.path.join(accumulo_conf_dir, example_file))
+
+  logger.info("TODO Build the native maps")
+
   return subprocess.call(['chown', '-R', 'accumulo', accumulo_home])
 
 if __name__ == '__main__':
@@ -108,6 +134,13 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument("--accumulo_tarball", help="An Accumulo tarball to install", default=None)
   parser.add_argument("--accumulo_home", help="The location to install Accumulo", default="/usr/hdp/current/accumulo-ci")
+  parser.add_argument("--accumulo_site_file", help="The accumulo-site.xml file to install", default=os.path.join(current_dir, 'accumulo-site.xml'))
+  parser.add_argument("--accumulo_env_file", help="The accumulo-site.xml file to install", default=os.path.join(current_dir, 'accumulo-env.sh'))
+
+  parser.add_argument("--accumulo_masters_file", help="The masters file to install", default=os.path.join(current_dir, 'masters'))
+  parser.add_argument("--accumulo_monitor_file", help="The monitor file to install", default=os.path.join(current_dir, 'monitor'))
+  parser.add_argument("--accumulo_tracers_file", help="The tracers file to install", default=os.path.join(current_dir, 'tracers'))
+  parser.add_argument("--accumulo_slaves_file", help="The slaves file to install", default=os.path.join(current_dir, 'slaves'))
 
   args = parser.parse_args()
   # convert the arguments to kwargs
